@@ -8,14 +8,17 @@ types (zColor, zReturnCode) that are lost in the makepy-generated Pyfemap.py.
 Usage:
     python generate_stubs_tlb.py [--tlb PATH] [--output PATH]
 
-Defaults:
-    --tlb: C:\Program Files\Siemens\Femap 2412 Student\femap.tlb
-    --output: Pyfemap.pyi (in current directory)
+Path Resolution:
+    If --tlb is not specified, will use this order:
+    1. Environment variable FEMAP_TLB_PATH
+    2. Auto-detect in common Femap installation paths
+    3. Prompt with file dialog
 """
 
 import argparse
 import pythoncom
 from typing import Dict, List, Tuple, Set, Any, Optional
+from femap_path_utils import get_tlb_path
 
 # VT type codes to Python type names
 VT_NAMES = {
@@ -521,8 +524,8 @@ def main():
     )
     parser.add_argument(
         '--tlb',
-        default=r'C:\Program Files\Siemens\Femap 2412 Student\femap.tlb',
-        help='Path to femap.tlb file'
+        default=None,
+        help='Path to femap.tlb file (if not specified, will auto-detect or prompt)'
     )
     parser.add_argument(
         '--output',
@@ -531,9 +534,15 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Loading type library: {args.tlb}")
+    # Resolve the .tlb path using multiple strategies
+    tlb_path = get_tlb_path(args.tlb)
+    if not tlb_path:
+        print("ERROR: No type library selected")
+        return 1
+
+    print(f"Loading type library: {tlb_path}")
     try:
-        typelib = pythoncom.LoadTypeLib(args.tlb)
+        typelib = pythoncom.LoadTypeLib(tlb_path)
     except Exception as e:
         print(f"Error loading type library: {e}")
         return 1

@@ -8,7 +8,13 @@ This script:
 3. Generates femap_constants.py with proper type safety
 
 Usage:
-    python generate_constants_tlb.py [--tlb PATH]
+    python generate_constants_tlb.py [--tlb PATH] [--output PATH] [--list-enums]
+
+Path Resolution:
+    If --tlb is not specified, will use this order:
+    1. Environment variable FEMAP_TLB_PATH
+    2. Auto-detect in common Femap installation paths
+    3. Prompt with file dialog
 """
 
 import argparse
@@ -16,6 +22,7 @@ import pythoncom
 from pathlib import Path
 from collections import defaultdict
 from typing import NamedTuple, Dict, List
+from femap_path_utils import get_tlb_path
 
 # Type kind constants
 TKIND_ENUM = 0
@@ -264,6 +271,88 @@ def generate_flat_class(constants: list[ConstantInfo], prefix: str, enum_name: s
     return lines
 
 
+def detect_prefixes(const_list: List[ConstantInfo]) -> Dict[str, List[ConstantInfo]]:
+    """Detect common prefixes in constant names for nested subclassing."""
+    prefix_groups = defaultdict(list)
+
+    for const in const_list:
+        # Try to find common prefix pattern (e.g., APIWARN_, CTRLDEF_, FCL_, FPF_)
+        parts = const.name.split('_', 1)
+        if len(parts) > 1:
+            prefix = parts[0] + '_'
+            prefix_groups[prefix].append(const)
+        else:
+            # No underscore - put in root
+            prefix_groups[''].append(const)
+
+    # Only use nested structure if multiple prefixes detected
+    if len(prefix_groups) > 1 and '' not in prefix_groups:
+        return dict(prefix_groups)
+    else:
+        # Single prefix or mixed - flatten
+        return {'': const_list}
+
+
+def generate_tier2_direct(enums: Dict[str, List[ConstantInfo]]) -> List[str]:
+    """Generate IntEnum classes with nested subclasses for multi-prefix enums."""
+    lines = []
+    lines.append('')
+    lines.append('# ' + '='*70)
+    lines.append('# Tier 2: Auto-Generated Enums (Direct Mapping)')
+    lines.append('# ' + '='*70)
+    lines.append('# The following enums are generated directly from the .tlb file')
+    lines.append('# Enums with multiple prefixes use nested subclasses for organization.')
+    lines.append('# Constant names are preserved exactly as they appear in the .tlb.')
+    lines.append('')
+
+    tier2_count = 0
+    tier2_enums = 0
+
+    for enum_name in sorted(enums.keys()):
+        const_list = enums[enum_name]
+        if not const_list:
+            continue
+
+        tier2_enums += 1
+        tier2_count += len(const_list)
+
+        # Detect if this enum has multiple prefixes
+        prefix_groups = detect_prefixes(const_list)
+
+        if len(prefix_groups) == 1 and '' in prefix_groups:
+            # Simple flat enum
+            lines.append(f'class {enum_name}(IntEnum):')
+            lines.append(f'    """Constants from {enum_name} enum (auto-generated)."""')
+            lines.append('')
+
+            for const in sorted(const_list, key=lambda c: c.value):
+                lines.append(f'    {const.name} = {const.value}')
+
+            lines.append('')
+            lines.append('')
+        else:
+            # Nested structure for multiple prefixes
+            lines.append(f'class {enum_name}:')
+            lines.append(f'    """Constants from {enum_name} enum (auto-generated, nested by prefix)."""')
+            lines.append('')
+
+            for prefix in sorted(prefix_groups.keys()):
+                # Create nested class for each prefix
+                class_name = prefix.rstrip('_') if prefix else 'Other'
+                lines.append(f'    class {class_name}(IntEnum):')
+                lines.append(f'        """Constants with {prefix} prefix."""')
+                lines.append('')
+
+                for const in sorted(prefix_groups[prefix], key=lambda c: c.value):
+                    lines.append(f'        {const.name} = {const.value}')
+
+                lines.append('')
+
+            lines.append('')
+
+    return lines, tier2_count, tier2_enums
+
+
 def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_path: Path):
     """Generate the femap_constants.py file."""
 
@@ -289,10 +378,12 @@ def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_pat
         '',
     ]
 
-    # Track which enums were processed
-    processed = []
-    skipped = []
+    # Track which enums were processed in Tier 1 (curated aliases)
+    tier1_processed = []
+    tier1_skipped = []
+    tier1_enum_names = set()  # Track which enum names are in ALIAS_CONFIG
 
+    # Tier 1: Curated aliases from ALIAS_CONFIG
     for config_key, config in ALIAS_CONFIG.items():
         # Handle virtual enum syntax: "zColor:FPF_" means filter zColor by FPF_ prefix
         if ':' in config_key:
@@ -302,8 +393,11 @@ def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_pat
             filter_prefix = None
 
         if enum_name not in constants:
-            skipped.append(config_key)
+            tier1_skipped.append(config_key)
             continue
+
+        # Track that this enum is in ALIAS_CONFIG (for Tier 2 filtering)
+        tier1_enum_names.add(enum_name)
 
         class_name, prefix, use_nested = config
         const_list = constants[enum_name]
@@ -312,10 +406,10 @@ def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_pat
         if filter_prefix:
             const_list = [c for c in const_list if c.name.startswith(filter_prefix)]
             if not const_list:
-                skipped.append(config_key)
+                tier1_skipped.append(config_key)
                 continue
 
-        processed.append((config_key, class_name, len(const_list)))
+        tier1_processed.append((config_key, class_name, len(const_list)))
 
         # Generate class header
         if use_nested:
@@ -337,23 +431,46 @@ def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_pat
         lines.append('')
         lines.append('')
 
+    # Tier 2: Auto-generated enums (all enums NOT in ALIAS_CONFIG)
+    tier2_enums = {k: v for k, v in constants.items() if k not in tier1_enum_names}
+
+    if tier2_enums:
+        tier2_lines, tier2_const_count, tier2_enum_count = generate_tier2_direct(tier2_enums)
+        lines.extend(tier2_lines)
+    else:
+        tier2_const_count = 0
+        tier2_enum_count = 0
+
+    # Calculate totals
+    tier1_const_count = sum(count for _, _, count in tier1_processed)
+    total_enums = len(tier1_processed) + tier2_enum_count
+    total_constants = tier1_const_count + tier2_const_count
+
     # Add summary comment at the end
     lines.append('# ' + '=' * 70)
     lines.append('# Generation Summary')
     lines.append('# ' + '=' * 70)
-    lines.append(f'# Processed {len(processed)} enums:')
-    for enum_name, class_name, count in processed:
+    lines.append(f'# Tier 1: Curated Aliases ({len(tier1_processed)} enums, {tier1_const_count} constants)')
+    for enum_name, class_name, count in tier1_processed:
         lines.append(f'#   {class_name} ({count} constants) from {enum_name}')
-    if skipped:
-        lines.append(f'# Skipped {len(skipped)} enums (not found in .tlb):')
-        for enum_name in skipped:
+    if tier1_skipped:
+        lines.append(f'# Tier 1 Skipped: {len(tier1_skipped)} enums (not found in .tlb):')
+        for enum_name in tier1_skipped:
             lines.append(f'#   {enum_name}')
+    lines.append('#')
+    lines.append(f'# Tier 2: Auto-Generated ({tier2_enum_count} enums, {tier2_const_count} constants)')
+    lines.append('#   (All remaining enums from .tlb with direct mapping)')
+    lines.append('#')
+    lines.append(f'# Total: {total_enums} enums, {total_constants} constants')
 
     # Write file
     output_path.write_text('\n'.join(lines), encoding='utf-8')
     print(f"Generated {output_path}")
-    print(f"  Processed: {len(processed)} enums")
-    print(f"  Skipped: {len(skipped)} enums (not in .tlb)")
+    print(f"  Tier 1 (Curated): {len(tier1_processed)} enums, {tier1_const_count} constants")
+    print(f"  Tier 2 (Auto-gen): {tier2_enum_count} enums, {tier2_const_count} constants")
+    print(f"  Total: {total_enums} enums, {total_constants} constants")
+    if tier1_skipped:
+        print(f"  Tier 1 Skipped: {len(tier1_skipped)} enums (not in .tlb)")
 
 
 def print_available_enums(constants: Dict[str, List[ConstantInfo]]):
@@ -383,8 +500,8 @@ def main():
     )
     parser.add_argument(
         '--tlb',
-        default=r'C:\Program Files\Siemens\Femap 2412 Student\femap.tlb',
-        help='Path to femap.tlb file'
+        default=None,
+        help='Path to femap.tlb file (if not specified, will auto-detect or prompt)'
     )
     parser.add_argument(
         '--output',
@@ -398,11 +515,17 @@ def main():
     )
     args = parser.parse_args()
 
+    # Resolve the .tlb path using multiple strategies
+    tlb_path = get_tlb_path(args.tlb)
+    if not tlb_path:
+        print("ERROR: No type library selected")
+        return 1
+
     script_dir = Path(__file__).parent
     output_path = script_dir / args.output
 
     print("Parsing .tlb constants...")
-    constants = parse_constants_from_tlb(args.tlb)
+    constants = parse_constants_from_tlb(tlb_path)
     print(f"Found {sum(len(v) for v in constants.values())} constants in {len(constants)} enums")
 
     if args.list_enums:

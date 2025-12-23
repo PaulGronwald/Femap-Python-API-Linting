@@ -17,6 +17,7 @@ Path Resolution:
 
 import argparse
 import pythoncom
+import re
 from typing import Dict, List, Tuple, Set, Any, Optional
 from femap_path_utils import get_tlb_path
 
@@ -89,6 +90,81 @@ for base_enum, subsets in ENUM_UNION_MAP.items():
     if base_enum in ENUM_ALIAS_MAP:
         # Insert primary alias at the front
         subsets.insert(0, ENUM_ALIAS_MAP[base_enum])
+
+
+# Version suffix pattern: function name ending in digits (e.g., Function2, Function3)
+VERSION_SUFFIX_PATTERN = re.compile(r'^(.+?)(\d+)$')
+
+
+def build_version_map(methods: List[Dict]) -> Dict[str, Dict[int, Dict]]:
+    """Build a map of base function names to their versioned variants.
+
+    Returns: {base_name: {version: method_info, ...}, ...}
+    where version 0 represents the original (no suffix) function.
+    """
+    version_map: Dict[str, Dict[int, Dict]] = {}
+
+    for method in methods:
+        name = method['name']
+        match = VERSION_SUFFIX_PATTERN.match(name)
+
+        if match:
+            base_name = match.group(1)
+            version = int(match.group(2))
+        else:
+            base_name = name
+            version = 0
+
+        if base_name not in version_map:
+            version_map[base_name] = {}
+        version_map[base_name][version] = method
+
+    return version_map
+
+
+def get_version_hint(method_name: str, version_map: Dict[str, Dict[int, Dict]]) -> Optional[str]:
+    """Get a version hint for a method if newer versions exist.
+
+    Returns a hint string or None if no newer version exists.
+    """
+    match = VERSION_SUFFIX_PATTERN.match(method_name)
+
+    if match:
+        base_name = match.group(1)
+        current_version = int(match.group(2))
+    else:
+        base_name = method_name
+        current_version = 0
+
+    if base_name not in version_map:
+        return None
+
+    versions = version_map[base_name]
+    max_version = max(versions.keys())
+
+    if current_version >= max_version:
+        return None  # This is the latest version
+
+    # Find the latest version
+    latest_method = versions[max_version]
+    latest_name = latest_method['name']
+
+    # Compare parameter counts
+    current_method = versions.get(current_version)
+    if current_method:
+        current_params = len(current_method.get('params', []))
+        latest_params = len(latest_method.get('params', []))
+
+        if latest_params > current_params:
+            diff = latest_params - current_params
+            return f'Newer version available: {latest_name} (adds {diff} parameter{"s" if diff > 1 else ""})'
+        elif latest_params < current_params:
+            diff = current_params - latest_params
+            return f'Newer version available: {latest_name} (simplified API, {diff} fewer parameter{"s" if diff > 1 else ""})'
+        else:
+            return f'Newer version available: {latest_name} (may have different behavior)'
+
+    return f'Newer version available: {latest_name}'
 
 
 def resolve_type(tinfo, typedesc) -> str:
@@ -403,10 +479,14 @@ def translate_type(type_str: str) -> str:
 
 
 def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
-                       output_path: str) -> None:
-    """Generate the .pyi stub file."""
+                       output_path: str) -> Tuple[int, int]:
+    """Generate the .pyi stub file.
+
+    Returns: (total_methods, deprecated_count) tuple for summary.
+    """
     # Collect which aliases are actually used
     used_aliases = set()
+    deprecated_count = 0
 
     lines = [
         '# Auto-generated from Femap type library (.tlb)',
@@ -415,6 +495,9 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
         '# This file provides authoritative type information extracted directly',
         '# from the COM type library, including interface types (IMatl, INode)',
         '# and enum types linked to femap_constants.py aliases.',
+        '#',
+        '# Methods with newer versions available are marked with .. deprecated::',
+        '# docstrings indicating the recommended alternative.',
         '',
         'from typing import Any, Tuple, Optional, overload',
         'from win32com.client import DispatchBaseClass',
@@ -464,6 +547,9 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
 
         has_content = False
 
+        # Build version map for this interface's methods
+        version_map = build_version_map(iface['methods'])
+
         # Properties
         for prop in sorted(iface['properties'], key=lambda x: x['name']):
             has_content = True
@@ -501,7 +587,21 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
 
             param_str = ', '.join(params)
             ret_type = track_and_translate(method['return_type'])
-            lines.append(f'    def {method["name"]}({param_str}) -> {ret_type}: ...')
+
+            # Check for version hint
+            version_hint = get_version_hint(method['name'], version_map)
+
+            if version_hint:
+                # Add method with docstring containing version warning
+                deprecated_count += 1
+                lines.append(f'    def {method["name"]}({param_str}) -> {ret_type}:')
+                lines.append(f'        """')
+                lines.append(f'        .. deprecated::')
+                lines.append(f'            {version_hint}')
+                lines.append(f'        """')
+                lines.append(f'        ...')
+            else:
+                lines.append(f'    def {method["name"]}({param_str}) -> {ret_type}: ...')
 
         if not has_content:
             lines.append('    ...')
@@ -516,6 +616,8 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
+
+    return deprecated_count
 
 
 def main():
@@ -578,7 +680,7 @@ def main():
 
     # Generate stub file
     print(f"Generating {args.output}...")
-    generate_stub_file(interfaces, enums, args.output)
+    deprecated_count = generate_stub_file(interfaces, enums, args.output)
 
     # Summary
     total_props = sum(len(i['properties']) for i in interfaces)
@@ -588,6 +690,7 @@ def main():
     print(f"  - {len(interfaces)} interfaces")
     print(f"  - {total_props} properties")
     print(f"  - {total_methods} methods")
+    print(f"  - {deprecated_count} methods with deprecation hints (newer versions available)")
     print("Done!")
 
     return 0

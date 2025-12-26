@@ -21,7 +21,7 @@ import argparse
 import pythoncom
 from pathlib import Path
 from collections import defaultdict
-from typing import NamedTuple, Dict, List
+from typing import NamedTuple, Dict, List, Tuple
 from femap_path_utils import get_tlb_path
 
 # Type kind constants
@@ -215,12 +215,16 @@ def strip_prefix(name: str, prefix: str) -> str:
     return name
 
 
-def generate_nested_class(constants: List[ConstantInfo], prefix: str, enum_name: str) -> List[str]:
-    """Generate nested class structure for constants with secondary grouping.
+def generate_nested_class(constants: List[ConstantInfo], prefix: str, enum_name: str) -> Tuple[List[str], List[str]]:
+    """Generate nested class structure with IntEnum subclasses.
 
-    E.g., FGD_ELEM_BYCOLOR -> GroupDef.Elem.BYCOLOR
+    E.g., FGD_ELEM_BYCOLOR -> GroupDef.ELEM.BYCOLOR
+
+    Returns:
+        Tuple of (lines, nested_class_names) for generating union type alias
     """
     lines = []
+    nested_class_names = []
 
     # Group by secondary prefix (e.g., ELEM, NODE, CSYS, etc.)
     groups = defaultdict(list)
@@ -237,10 +241,11 @@ def generate_nested_class(constants: List[ConstantInfo], prefix: str, enum_name:
         else:
             ungrouped.append((stripped, const))
 
-    # Generate nested classes for each group
+    # Generate nested IntEnum classes for each group
     for group_name in sorted(groups.keys()):
         members = groups[group_name]
-        lines.append(f"    class {group_name}:")
+        lines.append(f"    class {group_name}(IntEnum):")
+        nested_class_names.append(group_name)
         for member_name, const in sorted(members, key=lambda x: x[1].value):
             # Clean up member name
             if member_name and member_name[0].isdigit():
@@ -248,14 +253,14 @@ def generate_nested_class(constants: List[ConstantInfo], prefix: str, enum_name:
             lines.append(f"        {member_name} = {const.value}")
         lines.append("")
 
-    # Add ungrouped constants at class level
+    # Add ungrouped constants at class level (as plain ints)
     if ungrouped:
         lines.append("    # Ungrouped constants")
         for member_name, const in sorted(ungrouped, key=lambda x: x[1].value):
             lines.append(f"    {member_name} = {const.value}")
         lines.append("")
 
-    return lines
+    return lines, nested_class_names
 
 
 def generate_flat_class(constants: list[ConstantInfo], prefix: str, enum_name: str, class_name: str) -> list[str]:
@@ -413,7 +418,7 @@ def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_pat
 
         # Generate class header
         if use_nested:
-            # Nested classes can't be IntEnum, use regular class
+            # Nested classes can't be IntEnum, use regular class as container
             lines.append(f'class {class_name}:')
             lines.append(f'    """Constants from {enum_name} enum (nested grouping)."""')
         else:
@@ -423,12 +428,20 @@ def generate_constants_file(constants: dict[str, list[ConstantInfo]], output_pat
 
         # Generate class body
         if use_nested:
-            body = generate_nested_class(const_list, prefix, enum_name)
+            body, nested_names = generate_nested_class(const_list, prefix, enum_name)
+            lines.extend(body)
+            lines.append('')
+            # Generate type alias as union of nested IntEnum classes
+            if nested_names:
+                union_parts = [f'{class_name}.{n}' for n in nested_names]
+                lines.append(f'# Type alias for {class_name} nested IntEnums')
+                lines.append(f'{class_name}Type = {" | ".join(union_parts)}')
+                lines.append('')
         else:
             body = generate_flat_class(const_list, prefix, enum_name, class_name)
+            lines.extend(body)
+            lines.append('')
 
-        lines.extend(body)
-        lines.append('')
         lines.append('')
 
     # Tier 2: Auto-generated enums (all enums NOT in ALIAS_CONFIG)

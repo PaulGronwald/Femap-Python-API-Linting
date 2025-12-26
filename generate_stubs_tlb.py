@@ -447,6 +447,10 @@ def translate_type(type_str: str) -> str:
 
     For enums with virtual subsets (like zColor which contains Color, BrushPattern,
     PenLineStyle), returns a union type.
+
+    For enums with nested groupings (like zGroupDefinitionType -> GroupDef),
+    returns the Type alias (e.g., GroupDefType) since the nested values are
+    IntEnum members.
     """
     # Handle Tuple types like "Tuple[zReturnCode, int, Any]"
     if type_str.startswith('Tuple['):
@@ -473,6 +477,13 @@ def translate_type(type_str: str) -> str:
     if type_str in ENUM_UNION_MAP:
         # Return union of all subset types: Color | BrushPattern | PenLineStyle
         return ' | '.join(ENUM_UNION_MAP[type_str])
+
+    # Check if this enum uses nested grouping - use the Type alias
+    # E.g., zGroupDefinitionType -> GroupDefType (union of GroupDef.NODE, GroupDef.ELEM, etc.)
+    if type_str in ALIAS_CONFIG:
+        alias_name, prefix, is_nested = ALIAS_CONFIG[type_str]
+        if is_nested:
+            return f'{alias_name}Type'
 
     # Direct translation of enum names
     return ENUM_ALIAS_MAP.get(type_str, type_str)
@@ -540,6 +551,9 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
             for alias in subsets:
                 if alias in translated:
                     used_aliases.add(alias)
+        # Track Type aliases for nested groupings (e.g., GroupDefType)
+        if translated.endswith('Type'):
+            used_aliases.add(translated)
         return translated
 
     for iface in sorted(interfaces, key=lambda x: x['name']):

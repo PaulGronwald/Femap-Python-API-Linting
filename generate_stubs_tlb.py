@@ -495,8 +495,9 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
 
     Returns: (total_methods, deprecated_count) tuple for summary.
     """
-    # Collect which aliases are actually used
+    # Collect which aliases/types are actually used
     used_aliases = set()
+    used_enum_types = set()  # Original z* enum names used in type annotations
     deprecated_count = 0
 
     lines = [
@@ -517,14 +518,6 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
     # We'll add the femap_constants import after we know which aliases are used
     import_line_index = len(lines)
     lines.append('')  # Placeholder for import
-    lines.append('')
-    lines.append('')
-
-    # Add enum type aliases - both original z* names AND friendly aliases
-    lines.append('# Enum types (original .tlb names as aliases to int)')
-    for enum_name in sorted(enums.keys()):
-        # Keep original z* names for backward compatibility
-        lines.append(f'{enum_name} = int')
     lines.append('')
     lines.append('')
 
@@ -554,6 +547,10 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
         # Track Type aliases for nested groupings (e.g., GroupDefType)
         if translated.endswith('Type'):
             used_aliases.add(translated)
+        # Track original z* enum types that weren't translated to an alias
+        # These need to be imported from femap_constants
+        if type_str in enums and type_str == translated:
+            used_enum_types.add(type_str)
         return translated
 
     for iface in sorted(interfaces, key=lambda x: x['name']):
@@ -578,6 +575,7 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
         for method in sorted(iface['methods'], key=lambda x: x['name']):
             has_content = True
             params = ['self']
+            had_optional = False  # Track if we've seen an optional param
             for param_info in method['params']:
                 # Handle both 2-tuple (name, type) and 3-tuple (name, type, is_optional) formats
                 if len(param_info) == 3:
@@ -585,6 +583,12 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
                 else:
                     param_name, param_type = param_info
                     is_optional = False
+
+                # Once we have an optional param, all following must be optional
+                if had_optional:
+                    is_optional = True
+                if is_optional:
+                    had_optional = True
 
                 # Translate the parameter type
                 param_type = track_and_translate(param_type)
@@ -622,10 +626,11 @@ def generate_stub_file(interfaces: List[Dict], enums: Dict[str, Dict[str, int]],
 
         lines.append('')
 
-    # Now insert the femap_constants import with used aliases
-    if used_aliases:
-        sorted_aliases = sorted(used_aliases)
-        import_stmt = f'from femap_constants import {", ".join(sorted_aliases)}'
+    # Now insert the femap_constants import with used aliases AND enum types
+    all_imports = used_aliases | used_enum_types
+    if all_imports:
+        sorted_imports = sorted(all_imports)
+        import_stmt = f'from femap_constants import {", ".join(sorted_imports)}'
         lines[import_line_index] = import_stmt
 
     with open(output_path, 'w', encoding='utf-8') as f:

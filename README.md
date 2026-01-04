@@ -2,6 +2,8 @@
 
 Generate type stubs and IntelliSense support for [Siemens Femap](https://plm.sw.siemens.com/en-US/simcenter/mechanical-simulation/femap/) Python API development.
 
+Based on: https://github.com/vsdsantos/PyFemap
+
 ## Why This Project?
 
 Writing Python scripts for Femap's COM API is challenging because:

@@ -39,25 +39,38 @@ This repository generates:
 - Siemens Femap installed (for `femap.tlb` type library)
 - `pywin32` (`pip install pywin32`)
 
-## Usage
+## Installation
 
-### 1. Generate Type Stubs (Recommended)
+### Option 1: pip install (recommended)
 
-Generate the `.pyi` stub file for full IntelliSense support:
+Install as a Python package using the included `pyproject.toml`:
 
 ```bash
-python generate_stubs_tlb.py
+cd Femap-Linting
+pip install -e .
 ```
 
-**Options:**
+This makes `Pyfemap`, `femap_constants`, and `femap_path_utils` importable from anywhere in your Python environment.
+
+### Option 2: Direct Use
+
+Simply copy `Pyfemap.py`, `Pyfemap.pyi`, and `femap_constants.py` to your project.
+
+## Usage (Regenerating Files)
+
+Run these scripts if you need to regenerate files for a different Femap version.
+
+### 1. Generate Pyfemap.py (required)
+
+Generate the COM wrapper from your Femap type library:
+
 ```bash
-python generate_stubs_tlb.py --tlb "C:\Program Files\Siemens\Femap 2024\femap.tlb"
-python generate_stubs_tlb.py --output ./stubs/Pyfemap.pyi
+python generate_Pyfemap.py
 ```
 
-### 2. Generate Constants Module
+### 2. Generate Constants Module (optional)
 
-Generate type-safe enum constants:
+Generate type-safe enum constants for readable code:
 
 ```bash
 python generate_constants_tlb.py
@@ -66,15 +79,21 @@ python generate_constants_tlb.py
 **Options:**
 ```bash
 python generate_constants_tlb.py --list-enums  # List all available enums
-python generate_constants_tlb.py --output ./femap_constants.py
+python generate_constants_tlb.py --output femap_constants.py  # default: current directory
 ```
 
-### 3. Regenerate Pyfemap.py (Optional)
+### 3. Generate Type Stubs
 
-If you need to regenerate the COM wrapper for a different Femap version:
+Generate the `.pyi` stub file for IDE IntelliSense:
 
 ```bash
-python generate_Pyfemap.py
+python generate_stubs_tlb.py
+```
+
+**Options:**
+```bash
+python generate_stubs_tlb.py --tlb "C:\Program Files\Siemens\Femap 2024\femap.tlb"
+python generate_stubs_tlb.py --output Pyfemap.pyi  # default: current directory
 ```
 
 ## TLB Path Resolution
@@ -83,9 +102,9 @@ All scripts automatically find `femap.tlb` using this order:
 
 1. **Command-line argument**: `--tlb "path/to/femap.tlb"`
 2. **Environment variable**: `FEMAP_TLB_PATH`
-3. **Cached path**: From previous user selection
+3. **Cached path**: Stored in `%TEMP%\.femap_tlb_cache` from previous user selection
 4. **Auto-detect**: Searches `C:\Program Files\Siemens\Femap *`
-5. **File dialog**: Prompts you to select the file
+5. **File dialog**: Prompts you to select the file (saves to cache)
 
 ## Example: Before & After
 

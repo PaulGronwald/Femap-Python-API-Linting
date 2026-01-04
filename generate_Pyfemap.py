@@ -1,5 +1,7 @@
 """Regenerate Pyfemap.py from Femap type library using makepy.
 
+Based on : https://github.com/vsdsantos/PyFemap
+
 This script generates the COM wrapper (Pyfemap.py) from the Femap type library.
 It uses smart path resolution to find femap.tlb automatically or prompt the user.
 

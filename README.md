@@ -47,7 +47,7 @@ Install as a Python package using the included `pyproject.toml`:
 
 ```bash
 cd Femap-Linting
-pip install -e .
+pip install . 
 ```
 
 This makes `Pyfemap`, `femap_constants`, and `femap_path_utils` importable from anywhere in your Python environment.
